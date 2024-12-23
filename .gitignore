@@ -11,3 +11,7 @@ __pycache__/
 .vscode/
 .venv/
 venv/
+
+
+tmp/
+employees.csv/

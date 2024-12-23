@@ -30,6 +30,7 @@ login_url = os.getenv("LOGIN_URL")
 file_mask = "Список должников ноябрь 2024.xlsx"
 local_dir = "./tmp"
 output_file = "./employees_result/employees.csv"
+hdfs_path = os.getenv("HDFS_PATH", "/data/employees/employees.csv")
 
 
 os.makedirs(local_dir, exist_ok=True)
@@ -43,7 +44,7 @@ def selenium_driver_setup():
     )  # запуск браузера без графического режима
     options.add_argument("--disable-gpu")  # без gpu
     options.add_argument("--no-sandbox")  # без режима sandbox
-    driver_path = ""
+    driver_path = os.getenv("DRIVER_PATH")
     service = Service(driver_path) if driver_path else None
     driver = webdriver.Chrome(service=service, options=options)
     return driver
