@@ -1,4 +1,3 @@
-# https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json
 import os
 import time
 import re
@@ -27,7 +26,8 @@ spark = (
 )
 base_url = os.getenv("BASE_URL")
 login_url = os.getenv("LOGIN_URL")
-file_mask = "Список должников ноябрь 2024.xlsx"
+# file_mask = r"Список должников\s(янв|фев|март|апр|май|июнь|июль|авг|сент|окт|нояб|дек)\s\d{4}\.xlsx"
+file_mask = r"Список должников\s(янв|фев|март|апр|май|июнь|июль|авг|сент|окт|нояб|дек)\s2024\.xlsx"
 local_dir = "./tmp"
 output_file = "./employees_result/employees.csv"
 hdfs_path = os.getenv("HDFS_PATH", "/data/employees/employees.csv")
@@ -141,3 +141,12 @@ if __name__ == "__main__":
         output_file, header=True
     )
     spark.stop()
+
+    # TODO: Добавить загрузку в HDFS
+    # csv_file = [
+    #     os.path.join(output_file, f)
+    #     for f in os.listdir(output_file)
+    #     if f.endswith(".csv")
+    # ][0]
+    # with open(csv_file, "rb") as f:
+    #     pass
