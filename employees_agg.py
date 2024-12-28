@@ -14,10 +14,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from dotenv import load_dotenv
 
-load_dotenv()
+from config import Config
 
+config = Config()
 
 spark = (
     SparkSession.builder.appName("Employees_data")
@@ -25,17 +25,6 @@ spark = (
     .config("spark.jars.packages", "com.crealytics:spark-excel_2.12:0.13.5")
     .getOrCreate()
 )
-base_url = os.getenv("BASE_URL")
-login_url = os.getenv("LOGIN_URL")
-
-file_mask = r"Список должников\s(янв(арь)?|февраль|март|апрель|май|июнь|июль|август|сентябрь|октябрь|ноябрь|декабрь)\s(2023|2024)\.xls(x)?"
-
-local_dir = "./tmp"
-output_file = "./employees_result/employees.csv"
-hdfs_path = os.getenv("HDFS_PATH", "/data/employees/employees.csv")
-
-
-os.makedirs(local_dir, exist_ok=True)
 
 
 def selenium_driver_setup():
@@ -46,7 +35,7 @@ def selenium_driver_setup():
     )  # запуск браузера без графического режима
     options.add_argument("--disable-gpu")  # без gpu
     options.add_argument("--no-sandbox")  # без режима sandbox
-    driver_path = os.getenv("DRIVER_PATH")
+    driver_path = config.DRIVER_PATH
     service = Service(driver_path) if driver_path else None
     driver = webdriver.Chrome(service=service, options=options)
     return driver
@@ -56,16 +45,16 @@ def login(driver, login_url, username=None, password=None):
     driver.get(login_url)
     username = driver.find_element(By.ID, "os_username")
     password = driver.find_element(By.ID, "os_password")
-    username.send_keys(os.getenv("NF_USERNAME"))
-    password.send_keys(os.getenv("NF_PASSWORD"))
-    time.sleep(2)
+    username.send_keys(config.NF_USERNAME)
+    password.send_keys(config.NF_PASSWORD)
+    time.sleep(1.5)
     password.send_keys(Keys.RETURN)
 
 
 def download_files(
     driver,
     file_mask,
-    base_url=None,
+    base_url,
 ):
     downloaded_files = []
     driver.get(base_url)
@@ -73,7 +62,7 @@ def download_files(
         EC.presence_of_element_located((By.CLASS_NAME, "filename"))
     )
     coookies = driver.get_cookies()
-    time.sleep(2)
+    time.sleep(1)
     session = requests.Session()
     for cookie in coookies:
         session.cookies.set(cookie["name"], cookie["value"])
@@ -85,14 +74,14 @@ def download_files(
         file_name = link.get("data-filename", "")
         if re.match(file_mask, file_name):
             href = link.get("href", "")
-            print(f"href: {href}")
+            # print(f"href: {href}")
             cleaned_base_url = re.sub(
                 r"pages/viewpage\.action\?pageId=\d+", "", base_url
             )
             file_url = (
                 cleaned_base_url + href if href.startswith("/") else href
             )
-            local_path = os.path.join(local_dir, file_name)
+            local_path = os.path.join(config.LOCAL_DIR, file_name)
             with session.get(file_url, stream=True) as r:
                 r.raise_for_status()
                 with open(local_path, "wb") as f:
@@ -144,7 +133,7 @@ def main(file_path):
         )
 
         file_name = os.path.basename(file_path)
-        match = re.search(file_mask, file_name).group(0)
+        match = re.search(config.FILE_MASK, file_name).group(0)
         if not match:
             raise ValueError(
                 f"Невозможно извлечь период из имени файла: {file_name}"
@@ -157,11 +146,14 @@ def main(file_path):
 
 
 if __name__ == "__main__":
+    os.makedirs(config.LOCAL_DIR, exist_ok=True)
     driver = selenium_driver_setup()
     try:
-        login(driver=driver, login_url=login_url)
+        login(driver=driver, login_url=config.LOGIN_URL)
         files = download_files(
-            driver=driver, file_mask=file_mask, base_url=os.getenv("BASE_URL")
+            driver=driver,
+            file_mask=config.FILE_MASK,
+            base_url=config.BASE_URL,
         )
         if not files:
             print("Нет файлов.")
@@ -184,7 +176,7 @@ if __name__ == "__main__":
         avg("Задолженность по списаниям, md").alias("sum_left_md"),
     )
     res_df.coalesce(1).write.option("header", "true").mode("overwrite").csv(
-        output_file, header=True
+        config.OUTPUT_FILE, header=True
     )
     spark.stop()
 
