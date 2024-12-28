@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import re
 import requests
@@ -26,8 +27,9 @@ spark = (
 )
 base_url = os.getenv("BASE_URL")
 login_url = os.getenv("LOGIN_URL")
-# file_mask = r"Список должников\s(янв|фев|март|апр|май|июнь|июль|авг|сент|окт|нояб|дек)\s\d{4}\.xlsx"
-file_mask = r"Список должников\s(янв|фев|март|апр|май|июнь|июль|авг|сент|окт|нояб|дек)\s2024\.xlsx"
+
+file_mask = r"Список должников\s(янв(арь)?|февраль|март|апрель|май|июнь|июль|август|сентябрь|октябрь|ноябрь|декабрь)\s(2023|2024)\.xls(x)?"
+
 local_dir = "./tmp"
 output_file = "./employees_result/employees.csv"
 hdfs_path = os.getenv("HDFS_PATH", "/data/employees/employees.csv")
@@ -101,30 +103,74 @@ def download_files(
     return downloaded_files
 
 
-def main(file_path):
-    df = (
-        spark.read.format("com.crealytics.spark.excel")
-        .option("header", "true")
-        .option("inferSchema", "true")
-        .option("dataAddress", "'jira_dolg'!A4")
-        .load(file_path)
-    )
+def align_columns(dataframes):
+    """
+    Приводит DataFrame к одинаковой структуре (одинаковые столбцы).
+    Отсутствующие столбцы заполняются None, лишние удаляются.
+    """
+    # Получить полный список столбцов из всех DataFrame
+    all_columns = set()
+    for df in dataframes:
+        all_columns.update(df.columns)
 
-    file_name = os.path.basename(file_path)
-    month_year_pattern = r"(янв|фев|март|апр|май|июнь|июль|авг|сент|окт|нояб|дек)[а-я]*\s(\d{4})"
-    month_year = re.search(month_year_pattern, file_name).group(0)
-    df = df.withColumn("Период", lit(month_year))
-    return df
+    all_columns = list(all_columns)  # Преобразуем в список для упорядочивания
+
+    # Привести каждый DataFrame к общей структуре
+    aligned_dfs = []
+    for df in dataframes:
+        missing_columns = set(all_columns) - set(df.columns)
+        extra_columns = set(df.columns) - set(all_columns)
+
+        # Добавить отсутствующие столбцы с None
+        for col_name in missing_columns:
+            df = df.withColumn(col_name, lit(None))
+
+        # Удалить лишние столбцы
+        df = df.select([col for col in all_columns if col in df.columns])
+
+        aligned_dfs.append(df)
+
+    return aligned_dfs
+
+
+def main(file_path):
+    try:
+        df = (
+            spark.read.format("com.crealytics.spark.excel")
+            .option("header", "true")
+            .option("inferSchema", "true")
+            .option("dataAddress", "'jira_dolg'!A4")
+            .load(file_path)
+        )
+
+        file_name = os.path.basename(file_path)
+        match = re.search(file_mask, file_name).group(0)
+        if not match:
+            raise ValueError(
+                f"Невозможно извлечь период из имени файла: {file_name}"
+            )
+        df = df.withColumn("Период", lit(match))
+        return df
+    except Exception as e:
+        print(f"Ошибка при обработке файла {file_path}: {e}")
+        return None
 
 
 if __name__ == "__main__":
     driver = selenium_driver_setup()
-    login(driver=driver, login_url=login_url)
-    files = download_files(
-        driver=driver, file_mask=file_mask, base_url=os.getenv("BASE_URL")
-    )
-    driver.quit()
+    try:
+        login(driver=driver, login_url=login_url)
+        files = download_files(
+            driver=driver, file_mask=file_mask, base_url=os.getenv("BASE_URL")
+        )
+        if not files:
+            print("Нет файлов.")
+            sys.exit(-1)
+    finally:
+        driver.quit()
     dataframes = [main(file) for file in files]
+    dataframes = [df for df in dataframes if df is not None]
+    dataframes = align_columns(dataframes)
 
     combined_df = dataframes[0]
     for df in dataframes[1:]:
