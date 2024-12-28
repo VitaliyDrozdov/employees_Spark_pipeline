@@ -4,7 +4,7 @@ import time
 import re
 import requests
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import avg, sum, lit
+from pyspark.sql.functions import avg, sum, lit, col, countDistinct
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -148,11 +148,31 @@ def spark_transform(dataframes):
             "Плановое количество md согласно утвержденному графику работы"
         ).alias("sum_planned_md"),
         sum("Списанное в Jira количество md").alias("sum_md"),
-        avg("Задолженность по списаниям, md").alias("sum_left_md"),
+        avg("Задолженность по списаниям, md").alias("avg_left_md"),
+        sum("Задолженность по списаниям, md").alias("sum_left_md"),
+        countDistinct("ФИО").alias("num_employees"),
+        (
+            sum("Списанное в Jira количество md")
+            / sum(
+                "Плановое количество md согласно утвержденному графику работы"
+            )
+            * 100
+        ).alias("completion_percentage"),
     )
+    high_debt_df = combined_df.filter(
+        col("Задолженность по списаниям, md") > 5
+    ).select("Филиал сотрудника", "ФИО", "Задолженность по списаниям, md")
+    return (res_df, high_debt_df)
+
+
+def spark_write_to_file(dataframes):
+    res_df, high_debt_df = dataframes
     res_df.coalesce(1).write.option("header", "true").mode("overwrite").csv(
-        config.OUTPUT_FILE, header=True
+        f"{config.OUTPUT_FILE}_summary.csv"
     )
+    high_debt_df.coalesce(1).write.option("header", "true").mode(
+        "overwrite"
+    ).csv(f"{config.OUTPUT_FILE}_high_debt.csv")
 
 
 if __name__ == "__main__":
@@ -172,7 +192,8 @@ if __name__ == "__main__":
         driver.quit()
     dataframes = [read_excel_files(file) for file in files]
     dataframes = [df for df in dataframes if df is not None]
-    spark_transform(dataframes)
+    spark_write_to_file(spark_transform(dataframes))
+    print("Агрегации завершены и сохранены в CSV.")
     spark.stop()
 
     # TODO: Добавить загрузку в HDFS
