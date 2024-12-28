@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import re
+import hdfs
 import requests
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import avg, sum, lit, col, countDistinct
@@ -14,8 +15,9 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from hdfs import InsecureClient
 
-from config import Config
+from config import Config, logger
 
 config = Config()
 
@@ -94,7 +96,11 @@ def download_files(
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
             downloaded_files.append(local_path)
-            print(f"Файл загружен: {local_path}")
+            # Вариант с загрузкой в память:
+            # response = session.get(file_url, stream=True)
+            # content = BytesIO(response.content)
+            # downloaded_files.append((file_name, content))
+            logger.info(f"Файл загружен: {local_path}")
     return downloaded_files
 
 
@@ -109,15 +115,22 @@ def read_excel_files(file_path):
         )
 
         file_name = os.path.basename(file_path)
-        match = re.search(config.FILE_MASK, file_name).group(0)
+        match = re.search(config.FILE_MASK, file_name)
         if not match:
             raise ValueError(
                 f"Невозможно извлечь период из имени файла: {file_name}"
             )
-        df = df.withColumn("Период", lit(match))
+        df = df.withColumn("Период", lit(match.group(0)))
+        # Вариант с загрузкой в память:
+        # data = pd.read_excel(content, sheet_name="jira_dolg", skiprows=3)
+        # df = spark.createDataFrame(data)
+        # df = df.withColumn(
+        #     "Период", lit(re.search(config.FILE_MASK, file_name).group(0))
+        # )
         return df
     except Exception as e:
-        print(f"Ошибка при обработке файла {file_path}: {e}")
+        logger.error(f"Ошибка при обработке файла {file_path}: {e}")
+        # logger.error(f"Ошибка при обработке файла {file_name}: {e}")
         return None
 
 
@@ -175,6 +188,11 @@ def spark_write_to_file(dataframes):
     ).csv(f"{config.OUTPUT_FILE}_high_debt.csv")
 
 
+def upload_to_hdfs(local_path, hdfs_path):
+    client = InsecureClient("http://localhost:8085", user="hdfs")
+    client.upload(hdfs_path, local_path)
+
+
 if __name__ == "__main__":
     os.makedirs(config.LOCAL_DIR, exist_ok=True)
     driver = selenium_driver_setup()
@@ -186,21 +204,17 @@ if __name__ == "__main__":
             base_url=config.BASE_URL,
         )
         if not files:
-            print("Нет файлов.")
+            logger.error("Отсутствуют файлы для загрузки.")
             sys.exit(-1)
     finally:
         driver.quit()
-    dataframes = [read_excel_files(file) for file in files]
+    dataframes = [read_excel_files(file_path) for file_path in files]
+    # Вариант с загрузкой в память:
+    # dataframes = [
+    #     read_excel_files(file_name, content) for file_name, content in files
+    # ]
     dataframes = [df for df in dataframes if df is not None]
     spark_write_to_file(spark_transform(dataframes))
-    print("Агрегации завершены и сохранены в CSV.")
+    logger.info("Данные сохранены в CSV.")
     spark.stop()
-
-    # TODO: Добавить загрузку в HDFS
-    # csv_file = [
-    #     os.path.join(output_file, f)
-    #     for f in os.listdir(output_file)
-    #     if f.endswith(".csv")
-    # ][0]
-    # with open(csv_file, "rb") as f:
-    #     pass
+    # TODO: загрузка в hdfs

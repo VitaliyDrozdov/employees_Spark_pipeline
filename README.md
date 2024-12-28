@@ -32,7 +32,7 @@ ETL pipeline. Включает в себя загрузку по ссылке с
 4. Запускаем скрипт
 
    ```
-   pythnon employees_agg.py
+   python employees_agg.py
    
    ```
 
