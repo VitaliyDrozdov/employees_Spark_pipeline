@@ -4,7 +4,7 @@ import time
 import re
 import requests
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg, sum, regexp_extract, lit
+from pyspark.sql.functions import avg, sum, lit
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -28,6 +28,7 @@ spark = (
 
 
 def selenium_driver_setup():
+    """Настройка драйвера Selenium."""
     options = Options()
     # Далее используется Chrome
     options.add_argument(
@@ -35,13 +36,20 @@ def selenium_driver_setup():
     )  # запуск браузера без графического режима
     options.add_argument("--disable-gpu")  # без gpu
     options.add_argument("--no-sandbox")  # без режима sandbox
-    driver_path = config.DRIVER_PATH
-    service = Service(driver_path) if driver_path else None
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
+    service = Service(config.DRIVER_PATH) if config.DRIVER_PATH else None
+    return webdriver.Chrome(service=service, options=options)
 
 
-def login(driver, login_url, username=None, password=None):
+def soup_config(session, base_url):
+    """Получение HTML контента через BeautifulSoup."""
+    response = session.get(base_url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    return soup
+
+
+def login(driver, login_url):
+    """Логин в систему через Selenium."""
     driver.get(login_url)
     username = driver.find_element(By.ID, "os_username")
     password = driver.find_element(By.ID, "os_password")
@@ -56,25 +64,23 @@ def download_files(
     file_mask,
     base_url,
 ):
+    """Загрузка файлов с сайта через Selenium и requests."""
     downloaded_files = []
     driver.get(base_url)
     WebDriverWait(driver=driver, timeout=10).until(
         EC.presence_of_element_located((By.CLASS_NAME, "filename"))
     )
-    coookies = driver.get_cookies()
-    time.sleep(1)
     session = requests.Session()
+    coookies = driver.get_cookies()
     for cookie in coookies:
         session.cookies.set(cookie["name"], cookie["value"])
-    response = session.get(base_url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = soup_config(session, base_url)
     links = soup.find_all("a", class_="filename")
+
     for link in links:
         file_name = link.get("data-filename", "")
         if re.match(file_mask, file_name):
             href = link.get("href", "")
-            # print(f"href: {href}")
             cleaned_base_url = re.sub(
                 r"pages/viewpage\.action\?pageId=\d+", "", base_url
             )
@@ -92,37 +98,7 @@ def download_files(
     return downloaded_files
 
 
-def align_columns(dataframes):
-    """
-    Приводит DataFrame к одинаковой структуре (одинаковые столбцы).
-    Отсутствующие столбцы заполняются None, лишние удаляются.
-    """
-    # Получить полный список столбцов из всех DataFrame
-    all_columns = set()
-    for df in dataframes:
-        all_columns.update(df.columns)
-
-    all_columns = list(all_columns)  # Преобразуем в список для упорядочивания
-
-    # Привести каждый DataFrame к общей структуре
-    aligned_dfs = []
-    for df in dataframes:
-        missing_columns = set(all_columns) - set(df.columns)
-        extra_columns = set(df.columns) - set(all_columns)
-
-        # Добавить отсутствующие столбцы с None
-        for col_name in missing_columns:
-            df = df.withColumn(col_name, lit(None))
-
-        # Удалить лишние столбцы
-        df = df.select([col for col in all_columns if col in df.columns])
-
-        aligned_dfs.append(df)
-
-    return aligned_dfs
-
-
-def main(file_path):
+def read_excel_files(file_path):
     try:
         df = (
             spark.read.format("com.crealytics.spark.excel")
@@ -145,23 +121,22 @@ def main(file_path):
         return None
 
 
-if __name__ == "__main__":
-    os.makedirs(config.LOCAL_DIR, exist_ok=True)
-    driver = selenium_driver_setup()
-    try:
-        login(driver=driver, login_url=config.LOGIN_URL)
-        files = download_files(
-            driver=driver,
-            file_mask=config.FILE_MASK,
-            base_url=config.BASE_URL,
-        )
-        if not files:
-            print("Нет файлов.")
-            sys.exit(-1)
-    finally:
-        driver.quit()
-    dataframes = [main(file) for file in files]
-    dataframes = [df for df in dataframes if df is not None]
+def align_columns(dataframes):
+    """Приводит DataFrame к одинаковой структуре (одинаковые столбцы)."""
+    all_columns = list(set(col for df in dataframes for col in df.columns))
+    aligned_dfs = []
+    for df in dataframes:
+        missing_columns = set(all_columns) - set(df.columns)
+        # Добавить отсутствующие столбцы с None
+        for col_name in missing_columns:
+            df = df.withColumn(col_name, lit(None))
+        # Удалить лишние столбцы
+        df = df.select([col for col in all_columns if col in df.columns])
+        aligned_dfs.append(df)
+    return aligned_dfs
+
+
+def spark_transform(dataframes):
     dataframes = align_columns(dataframes)
 
     combined_df = dataframes[0]
@@ -178,6 +153,26 @@ if __name__ == "__main__":
     res_df.coalesce(1).write.option("header", "true").mode("overwrite").csv(
         config.OUTPUT_FILE, header=True
     )
+
+
+if __name__ == "__main__":
+    os.makedirs(config.LOCAL_DIR, exist_ok=True)
+    driver = selenium_driver_setup()
+    try:
+        login(driver=driver, login_url=config.LOGIN_URL)
+        files = download_files(
+            driver=driver,
+            file_mask=config.FILE_MASK,
+            base_url=config.BASE_URL,
+        )
+        if not files:
+            print("Нет файлов.")
+            sys.exit(-1)
+    finally:
+        driver.quit()
+    dataframes = [read_excel_files(file) for file in files]
+    dataframes = [df for df in dataframes if df is not None]
+    spark_transform(dataframes)
     spark.stop()
 
     # TODO: Добавить загрузку в HDFS
